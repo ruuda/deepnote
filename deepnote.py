@@ -39,6 +39,7 @@ USAGE
 
 import collections
 import json
+import random
 import sys
 import tensorflow as tf
 import typing
@@ -118,6 +119,25 @@ for msid in sorted(tracks.keys(), key=lambda x: -listencounts[x]):
     track_to_id[msid] = len(id_to_track)
     id_to_track.append(msid)
 
+# For a given listen, we are going to predict 6 context tracks: 3 before,
+# and 3 after. We want these to be part of the "same listening session", close
+# together in time. I am going to define this as "listened within 30 minutes of
+# the target track". Compute how many windows that leaves us, and store the
+# start indices of the windows so we can use them for training batches.
+num_context = 6
+windows = []
+for i in range(0, len(listens) - num_context - 1):
+    start = listens[i]
+    center = listens[i + num_context // 2]
+    end = listens[i + 1 + num_context]
+    diff_start = center.timestamp - start.timestamp
+    diff_end = end.timestamp - center.timestamp
+    # Allow listens in a window of 30 minutes (1800 seconds).
+    if diff_start < 1800 and diff_end < 1800:
+        windows.append(i)
+
+print(f'Found {len(windows)} suitable training samples of {num_context + 1} listens.')
+
 # Set up Tensorflow variables for the embedding. For the embedding dimension, in
 # my case I have roughly 7k distinct tracks and about 900 artists that occur in
 # those, so if we used dimension 7k, every track would get its own embedding,
@@ -134,19 +154,16 @@ num_tracks = len(id_to_track)
 
 # Number of negative samples per training batch. Should be at most the number of
 # tracks.
-num_sampled = 250
+num_sampled = 500
 
 embeddings = tf.Variable(tf.truncated_normal((num_tracks, dim_embedding)))
 nce_weights = tf.Variable(tf.truncated_normal((num_tracks, dim_embedding)))
 nce_biases = tf.Variable(tf.zeros((num_tracks,)))
 
-# From the track, we are going to predict 6 context tracks: 3 before,
-# and 3 after.
-num_context = 6
-
 # Define input placeholders.
 train_inputs = tf.placeholder(tf.int32, shape=(batch_size,))
 train_labels = tf.placeholder(tf.int32, shape=(batch_size, num_context))
+learning_rate = tf.placeholder(tf.float32, shape=())
 
 embed = tf.nn.embedding_lookup(embeddings, train_inputs)
 loss = tf.reduce_mean(
@@ -161,4 +178,58 @@ loss = tf.reduce_mean(
     )
 )
 
-optimizer = tf.train.AdamOptimizer(learning_rate=0.01).minimize(loss)
+optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
+
+
+# Fix the random seed for reproducible results. TODO: ALso fix Tensorflow's
+# initializer.
+random.seed(42)
+
+def iterate_windows_batch():
+    """Return (center_msids, contexts_msids) of the batch size."""
+    random.shuffle(windows)
+    for i in range(0, len(windows), batch_size):
+        if i + batch_size >= len(windows):
+            break
+
+        centers = []
+        contexts = []
+
+        for w in windows[i:i + batch_size]:
+            context = []
+            for k in range(0, num_context + 1):
+                msid = listens[w + k].recording_msid
+                if k == num_context // 2:
+                    centers.append(msid)
+                else:
+                    context.append(msid)
+
+            contexts.append(context)
+
+        yield (centers, contexts)
+
+
+with tf.Session() as session:
+    session.run(tf.global_variables_initializer())
+
+    for epoch in range(0, 500):
+        total_loss = 0.0
+
+        for b, (batch_centers, batch_contexts) in enumerate(iterate_windows_batch()):
+            inputs = [track_to_id[msid] for msid in batch_centers]
+            labels = [[track_to_id[msid] for msid in context] for context in batch_contexts]
+
+            feed_dict = {
+                train_inputs: inputs,
+                train_labels: labels,
+                learning_rate: 0.05 if epoch == 0 else 0.005
+            }
+
+            _, current_loss = session.run((optimizer, loss), feed_dict=feed_dict)
+
+            total_loss += current_loss
+
+            if b % 100 == 99:
+                mean_loss = total_loss / 100.0
+                total_loss = 0.0
+                print(f'Epoch {epoch} batch {b:4}: loss = {mean_loss:0.5f}')
