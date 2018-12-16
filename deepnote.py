@@ -136,11 +136,12 @@ windows = []
 for i in range(0, len(listens) - num_context - 1):
     start = listens[i]
     center = listens[i + num_context // 2]
-    end = listens[i + 1 + num_context]
+    end = listens[i + num_context]
     diff_start = center.timestamp - start.timestamp
     diff_end = end.timestamp - center.timestamp
     # Allow listens in a window of 30 minutes (1800 seconds).
     if diff_start < 1800 and diff_end < 1800:
+        assert end.timestamp - start.timestamp < 3600
         windows.append(i)
 
 print(f'Found {len(windows)} suitable training samples of {num_context + 1} listens.')
@@ -209,6 +210,7 @@ def iterate_windows_batch():
         contexts = []
 
         for w in windows[i:i + batch_size]:
+            times = []
             context = []
             for k in range(0, num_context + 1):
                 msid = listens[w + k].recording_msid
@@ -216,6 +218,9 @@ def iterate_windows_batch():
                     centers.append(msid)
                 else:
                     context.append(msid)
+                times.append(listens[w + k].timestamp)
+
+            assert max(times) - min(times) < 3600, f'Invalid window {times}'
 
             contexts.append(context)
 
@@ -285,10 +290,11 @@ def plot_embedding(emb: np.array):
 
 with tf.Session() as session:
     session.run(tf.global_variables_initializer())
+    rate = 0.05
+    total_loss = 0.0
+    n_loss = 0
 
     for epoch in range(0, 500):
-        total_loss = 0.0
-        rate = 0.03
 
         for b, (batch_centers, batch_contexts) in enumerate(iterate_windows_batch()):
             inputs = [track_to_id[msid] for msid in batch_centers]
@@ -303,18 +309,20 @@ with tf.Session() as session:
             _, current_loss = session.run((optimizer, loss), feed_dict=feed_dict)
 
             total_loss += current_loss
+            n_loss += 1
 
             if b % 100 == 99:
-                mean_loss = total_loss / 100.0
+                mean_loss = total_loss / n_loss
                 total_loss = 0.0
+                n_loss = 0.0
 
                 # Decay the learning rate during training,
                 # mostly for a faster start.
-                if mean_loss < 8.0:
+                if mean_loss < 6.0:
                     rate = min(rate, 0.001)
                 if mean_loss < 10.0:
                     rate = min(rate, 0.005)
-                elif mean_loss < 20.0:
+                elif mean_loss < 35.0:
                     rate = min(rate, 0.01)
 
                 print(f'Epoch {epoch} batch {b:4}: loss = {mean_loss:0.5f}')
