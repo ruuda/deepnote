@@ -69,18 +69,36 @@ class Track(typing.NamedTuple):
 
 listens = []
 listencounts = collections.defaultdict(lambda: 0)
-tracks = {}
 
 print('Parsing listens ...', end='', flush=True)
 for raw_listen in raw_listens:
     listen = Listen(**raw_listen)
     listencounts[listen.recording_msid] += 1
-    tracks[listen.recording_msid] = Track(listen.track_name, listen.artist_name)
     listens.append(listen)
 
 raw_listens = None
 print(f' done.')
+print(f'Listened to {len(listencounts)} distinct tracks.')
 
-for msid, lcount in sorted(listencounts.items(), key=lambda x: -x[1]):
-    track = tracks[msid]
-    print(f'{lcount:3} {track.artist} - {track.title}')
+# Remove tracks with few listens. We need at least *some* data
+# to get a decent embedding.
+min_listens = 5
+listens = [
+    listen
+    for listen in listens
+    if listencounts[listen.recording_msid] >= min_listens
+]
+
+tracks = {
+    listen.recording_msid: Track(listen.track_name, listen.artist_name)
+    for listen in listens
+}
+
+artists = {
+    listen.artist_msid: listen.artist_name
+    for listen in listens
+}
+
+print(f'Listened to {len(tracks)} distinct tracks at least {min_listens} times.')
+print(f'{len(artists)} distinct artists in remaining listens.')
+
