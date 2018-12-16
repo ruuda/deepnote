@@ -39,6 +39,7 @@ USAGE
 
 import collections
 import json
+import os
 import random
 import sys
 import tensorflow as tf
@@ -166,7 +167,8 @@ train_labels = tf.placeholder(tf.int32, shape=(batch_size, num_context))
 learning_rate = tf.placeholder(tf.float32, shape=())
 
 embed = tf.nn.embedding_lookup(embeddings, train_inputs)
-loss = tf.reduce_mean(
+
+predict_loss = tf.reduce_mean(
     tf.nn.nce_loss(
         weights=nce_weights,
         biases=nce_biases,
@@ -178,17 +180,25 @@ loss = tf.reduce_mean(
     )
 )
 
+# Add a bit of L2 regularization.
+regularize_loss = 0.1 * tf.reduce_mean(tf.square(embeddings))
+loss = predict_loss + regularize_loss
+
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
 
+# Add a saver to save the embedding, in order to visualize it in Tensorboard.
+saver = tf.train.Saver([embeddings])
 
 # Fix the random seed for reproducible results. TODO: ALso fix Tensorflow's
 # initializer.
 random.seed(42)
 
+num_batches = len(windows) // batch_size
+
 def iterate_windows_batch():
     """Return (center_msids, contexts_msids) of the batch size."""
     random.shuffle(windows)
-    for i in range(0, len(windows), batch_size):
+    for i in range(0, num_batches * batch_size, batch_size):
         if i + batch_size >= len(windows):
             break
 
@@ -209,11 +219,20 @@ def iterate_windows_batch():
         yield (centers, contexts)
 
 
+# Write metadata file so Tensorboard can show track titles with the embeddings.
+os.makedirs('model', exist_ok=True)
+with open('model/metadata.tsv', 'w', encoding='utf-8') as f:
+    for msid in id_to_track:
+        track = tracks[msid]
+        print(f'{track.artist} - {track.title}', file=f)
+
+
 with tf.Session() as session:
     session.run(tf.global_variables_initializer())
 
     for epoch in range(0, 500):
         total_loss = 0.0
+        rate = 0.03
 
         for b, (batch_centers, batch_contexts) in enumerate(iterate_windows_batch()):
             inputs = [track_to_id[msid] for msid in batch_centers]
@@ -222,7 +241,7 @@ with tf.Session() as session:
             feed_dict = {
                 train_inputs: inputs,
                 train_labels: labels,
-                learning_rate: 0.05 if epoch == 0 else 0.005
+                learning_rate: rate,
             }
 
             _, current_loss = session.run((optimizer, loss), feed_dict=feed_dict)
@@ -232,4 +251,20 @@ with tf.Session() as session:
             if b % 100 == 99:
                 mean_loss = total_loss / 100.0
                 total_loss = 0.0
+
+                # Decay the learning rate during training,
+                # mostly for a faster start.
+                if mean_loss < 8.0:
+                    rate = min(rate, 0.001)
+                if mean_loss < 10.0:
+                    rate = min(rate, 0.005)
+                elif mean_loss < 20.0:
+                    rate = min(rate, 0.01)
+
                 print(f'Epoch {epoch} batch {b:4}: loss = {mean_loss:0.5f}')
+
+                save_path = saver.save(
+                    session,
+                    save_path='model/model.ckpt',
+                    global_step=epoch * num_batches + b
+                )
