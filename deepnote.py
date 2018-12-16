@@ -37,13 +37,19 @@ USAGE
 
 """
 
+import matplotlib
+matplotlib.use('gtk3cairo')
+
 import collections
 import json
+import matplotlib.pyplot as plt
+import numpy as np
 import os
 import random
 import sys
 import tensorflow as tf
 import typing
+
 
 if len(sys.argv) != 2:
     print(__doc__.strip())
@@ -116,7 +122,7 @@ id_to_track = []
 
 # Assign ids by reverse frequency, so the more frequently listened tracks get
 # lower ids. This is required for tf.nn.nce_loss.
-for msid in sorted(tracks.keys(), key=lambda x: -listencounts[x]):
+for msid in sorted(tracks.keys(), key=lambda x: -min(listencounts[x], 20)):
     track_to_id[msid] = len(id_to_track)
     id_to_track.append(msid)
 
@@ -186,9 +192,6 @@ loss = predict_loss + regularize_loss
 
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
 
-# Add a saver to save the embedding, in order to visualize it in Tensorboard.
-saver = tf.train.Saver([embeddings])
-
 # Fix the random seed for reproducible results. TODO: ALso fix Tensorflow's
 # initializer.
 random.seed(42)
@@ -227,6 +230,59 @@ with open('model/metadata.tsv', 'w', encoding='utf-8') as f:
         print(f'{track.artist} - {track.title}', file=f)
 
 
+plt.ion()
+fig = plt.figure()
+num_plot = 45
+ax = fig.add_subplot(111)
+tracknames = [tracks[msid].artist for msid in id_to_track[:num_plot]]
+scatter, = ax.plot(
+    np.zeros(num_plot),
+    np.zeros(num_plot),
+    marker='o',
+    markersize=3,
+    linestyle='',
+)
+
+annotations = [
+    plt.annotate(
+        f'{tracks[msid].artist}\n{tracks[msid].title}',
+        (0.0, 0.0),
+        fontsize=10.0,
+    )
+    for msid in id_to_track[:num_plot]
+]
+
+def plot_embedding(emb: np.array):
+    # Extract the first two principal components of the embeddings of the first
+    # num_plot tracks.
+    # u, magnitudes, _v = np.linalg.svd(emb[:num_plot, :].T)
+    # assert u.shape == (dim_embedding, dim_embedding)
+    # assert magnitudes.shape == (dim_embedding,)
+
+    # Project embeddings on the space spanned by the first two principal
+    # components.
+    # ais = np.argpartition(-magnitudes, (0, 1))
+    # ax = u[ais[:2]]
+    # points = np.matmul(emb[:num_plot], ax.T)
+
+    # Scatter plot them.
+    #scatter.set_xdata(points[:, 0])
+    #scatter.set_ydata(points[:, 1])
+    # TODO: Check that the projection makes sense and use it.
+    # For now, just taking the first two coordinates is more stable.
+    scatter.set_xdata(emb[:num_plot, 0])
+    scatter.set_ydata(emb[:num_plot, 1])
+
+    ax.set_xlim((np.min(emb[:num_plot, 0]) - 0.1, np.max(emb[:num_plot, 0]) + 0.1))
+    ax.set_ylim((np.min(emb[:num_plot, 1]) - 0.1, np.max(emb[:num_plot, 1]) + 0.1))
+
+    for i, ann in enumerate(annotations):
+        ann.set_x(emb[i, 0])
+        ann.set_y(emb[i, 1])
+
+    plt.pause(0.001)
+
+
 with tf.Session() as session:
     session.run(tf.global_variables_initializer())
 
@@ -263,8 +319,5 @@ with tf.Session() as session:
 
                 print(f'Epoch {epoch} batch {b:4}: loss = {mean_loss:0.5f}')
 
-                save_path = saver.save(
-                    session,
-                    save_path='model/model.ckpt',
-                    global_step=epoch * num_batches + b
-                )
+                emb, = session.run((embeddings,))
+                plot_embedding(emb)
