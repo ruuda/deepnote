@@ -155,14 +155,15 @@ print(f'Found {len(windows)} suitable training samples of {num_context + 1} list
 # is a good place to start? It is a bit less than the number of artists, so we
 # do not get a dimension per artist either -- the model will need to eliminte
 # redundancies to fit. Let's try 265.
-dim_embedding = 265
+#dim_embedding = 265
+dim_embedding = 25
 
-batch_size = 64
+batch_size = 32
 num_tracks = len(id_to_track)
 
 # Number of negative samples per training batch. Should be at most the number of
 # tracks.
-num_sampled = 500
+num_sampled = 300
 
 embeddings = tf.Variable(tf.truncated_normal((num_tracks, dim_embedding)))
 nce_weights = tf.Variable(tf.truncated_normal((num_tracks, dim_embedding)))
@@ -188,7 +189,11 @@ predict_loss = tf.reduce_mean(
 )
 
 # Add a bit of L2 regularization.
-regularize_loss = 0.1 * tf.reduce_mean(tf.square(embeddings))
+regularize_loss = (
+    0.1 * tf.reduce_mean(tf.square(embeddings)) +
+    0.1 * tf.reduce_mean(tf.square(nce_biases)) +
+    0.1 * tf.reduce_mean(tf.square(nce_weights))
+)
 loss = predict_loss + regularize_loss
 
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
@@ -257,35 +262,46 @@ annotations = [
     for msid in id_to_track[:num_plot]
 ]
 
-def plot_embedding(emb: np.array):
+plt.show()
+
+projection = np.zeros((dim_embedding, 2))
+projection[0, 0] = 1.0
+projection[1, 1] = 1.0
+
+def update_projection(emb: np.array):
+    global projection
+
     # Extract the first two principal components of the embeddings of the first
     # num_plot tracks.
-    # u, magnitudes, _v = np.linalg.svd(emb[:num_plot, :].T)
-    # assert u.shape == (dim_embedding, dim_embedding)
-    # assert magnitudes.shape == (dim_embedding,)
+    u, magnitudes, _v = np.linalg.svd(emb.T)
+    assert u.shape == (dim_embedding, dim_embedding)
+    assert magnitudes.shape == (dim_embedding,)
 
     # Project embeddings on the space spanned by the first two principal
     # components.
-    # ais = np.argpartition(-magnitudes, (0, 1))
-    # ax = u[ais[:2]]
-    # points = np.matmul(emb[:num_plot], ax.T)
+    projection = u[:2].T
+    print('Projection quality:', magnitudes[:10] / np.sum(magnitudes))
+
+
+def plot_embedding(emb: np.array):
+    points = np.matmul(emb[:num_plot], projection)
 
     # Scatter plot them.
-    #scatter.set_xdata(points[:, 0])
-    #scatter.set_ydata(points[:, 1])
+    scatter.set_xdata(points[:, 0])
+    scatter.set_ydata(points[:, 1])
     # TODO: Check that the projection makes sense and use it.
     # For now, just taking the first two coordinates is more stable.
-    scatter.set_xdata(emb[:num_plot, 0])
-    scatter.set_ydata(emb[:num_plot, 1])
+    #scatter.set_xdata(emb[:num_plot, 0])
+    #scatter.set_ydata(emb[:num_plot, 1])
 
-    ax.set_xlim((np.min(emb[:num_plot, 0]) - 0.1, np.max(emb[:num_plot, 0]) + 0.1))
-    ax.set_ylim((np.min(emb[:num_plot, 1]) - 0.1, np.max(emb[:num_plot, 1]) + 0.1))
+    ax.set_xlim((np.min(points[:, 0]) - 0.1, np.max(points[:, 0]) + 0.1))
+    ax.set_ylim((np.min(points[:, 1]) - 0.1, np.max(points[:, 1]) + 0.1))
 
     for i, ann in enumerate(annotations):
-        ann.set_x(emb[i, 0])
-        ann.set_y(emb[i, 1])
+        ann.set_x(points[i, 0])
+        ann.set_y(points[i, 1])
 
-    plt.pause(0.001)
+    plt.pause(0.0001)
 
 
 with tf.Session() as session:
@@ -311,21 +327,30 @@ with tf.Session() as session:
             total_loss += current_loss
             n_loss += 1
 
-            if b % 100 == 99:
+            # Keep the window responsive.
+            plt.pause(0.0001)
+
+            if b % 200 == 0:
                 mean_loss = total_loss / n_loss
                 total_loss = 0.0
                 n_loss = 0.0
 
                 # Decay the learning rate during training,
                 # mostly for a faster start.
-                if mean_loss < 6.0:
+                if mean_loss < 4.5:
                     rate = min(rate, 0.001)
+                if mean_loss < 7.0:
+                    rate = min(rate, 0.004)
                 if mean_loss < 10.0:
-                    rate = min(rate, 0.005)
-                elif mean_loss < 35.0:
                     rate = min(rate, 0.01)
+                elif mean_loss < 35.0:
+                    rate = min(rate, 0.02)
 
                 print(f'Epoch {epoch} batch {b:4}: loss = {mean_loss:0.5f}')
 
                 emb, = session.run((embeddings,))
                 plot_embedding(emb)
+
+        # Update the projection after every epoch. It is expensive, so don't do
+        # it every time.
+        update_projection(emb)
