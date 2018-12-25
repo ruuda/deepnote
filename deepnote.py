@@ -161,13 +161,9 @@ dim_embedding = 25
 batch_size = 32
 num_tracks = len(id_to_track)
 
-# Number of negative samples per training batch. Should be at most the number of
-# tracks.
-num_sampled = 300
-
 embeddings = tf.Variable(tf.truncated_normal((num_tracks, dim_embedding)))
-nce_weights = tf.Variable(tf.truncated_normal((num_tracks, dim_embedding)))
-nce_biases = tf.Variable(tf.zeros((num_tracks,)))
+weights = tf.Variable(tf.truncated_normal((num_context, num_tracks, dim_embedding)))
+biases = tf.Variable(tf.zeros((num_context, num_tracks)))
 
 # Define input placeholders.
 train_inputs = tf.placeholder(tf.int32, shape=(batch_size,))
@@ -176,25 +172,29 @@ learning_rate = tf.placeholder(tf.float32, shape=())
 
 embed = tf.nn.embedding_lookup(embeddings, train_inputs)
 
-predict_loss = tf.reduce_mean(
-    tf.nn.nce_loss(
-        weights=nce_weights,
-        biases=nce_biases,
-        labels=train_labels,
-        inputs=embed,
-        num_sampled=num_sampled,
-        num_classes=num_tracks,
-        num_true=6,
-    )
-)
+# The loss is a weighted loss over all context tracks, where tracks closer to
+# the focus track weigh more.
+context_weight = np.array([0.1, 0.1, 0.3, 0.3, 0.1, 0.1])
+assert context_weight.shape == (num_context,)
+assert np.sum(context_weight) == 1.0
+
+predict_loss = 0.0
+for i in range(0, num_context):
+    bias = biases[i] #tf.stack([biases[i]] * batch_size)
+    logits = tf.matmul(embed, tf.transpose(weights[i])) + bias
+    assert logits.shape == (batch_size, num_tracks)
+    predict_loss = predict_loss + tf.nn.sparse_softmax_cross_entropy_with_logits(
+        labels=train_labels[:, i],
+        logits=logits,
+    ) * context_weight[i]
 
 # Add a bit of L2 regularization.
 regularize_loss = (
     0.1 * tf.reduce_mean(tf.square(embeddings)) +
-    0.1 * tf.reduce_mean(tf.square(nce_biases)) +
-    0.1 * tf.reduce_mean(tf.square(nce_weights))
+    0.2 * tf.reduce_mean(tf.square(biases)) +
+    0.1 * tf.reduce_mean(tf.square(weights))
 )
-loss = predict_loss + regularize_loss
+loss = tf.reduce_mean(predict_loss) + regularize_loss
 
 optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
 
@@ -306,7 +306,7 @@ def plot_embedding(emb: np.array):
 
 with tf.Session() as session:
     session.run(tf.global_variables_initializer())
-    rate = 0.05
+    rate = 0.03
     total_loss = 0.0
     n_loss = 0
 
@@ -337,13 +337,13 @@ with tf.Session() as session:
 
                 # Decay the learning rate during training,
                 # mostly for a faster start.
-                if mean_loss < 4.5:
+                if mean_loss < 0.5:
                     rate = min(rate, 0.001)
-                if mean_loss < 7.0:
+                if mean_loss < 2.0:
                     rate = min(rate, 0.004)
-                if mean_loss < 10.0:
+                if mean_loss < 6.0:
                     rate = min(rate, 0.01)
-                elif mean_loss < 35.0:
+                elif mean_loss < 9.0:
                     rate = min(rate, 0.02)
 
                 print(f'Epoch {epoch} batch {b:4}: loss = {mean_loss:0.5f}')
