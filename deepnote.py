@@ -306,7 +306,7 @@ def plot_embedding(emb: np.array):
 
 with tf.Session() as session:
     session.run(tf.global_variables_initializer())
-    rate = 0.03
+    rate = 0.01
     total_loss = 0.0
     n_loss = 0
 
@@ -330,21 +330,21 @@ with tf.Session() as session:
             # Keep the window responsive.
             plt.pause(0.0001)
 
-            if b % 200 == 0:
+            if n_loss == 200:
                 mean_loss = total_loss / n_loss
                 total_loss = 0.0
-                n_loss = 0.0
+                n_loss = 0
 
                 # Decay the learning rate during training,
                 # mostly for a faster start.
                 if mean_loss < 0.5:
                     rate = min(rate, 0.001)
-                if mean_loss < 2.0:
-                    rate = min(rate, 0.004)
+                if mean_loss < 3.0:
+                    rate = min(rate, 0.002)
                 if mean_loss < 6.0:
-                    rate = min(rate, 0.01)
-                elif mean_loss < 9.0:
-                    rate = min(rate, 0.02)
+                    rate = min(rate, 0.003)
+                elif mean_loss < 10.0:
+                    rate = min(rate, 0.005)
 
                 print(f'Epoch {epoch} batch {b:4}: loss = {mean_loss:0.5f}')
 
