@@ -156,9 +156,9 @@ print(f'Found {len(windows)} suitable training samples of {num_context + 1} list
 # do not get a dimension per artist either -- the model will need to eliminte
 # redundancies to fit. Let's try 265.
 #dim_embedding = 265
-dim_embedding = 25
+dim_embedding = 50
 
-batch_size = 32
+batch_size = 75
 num_tracks = len(id_to_track)
 
 embeddings = tf.Variable(tf.truncated_normal((num_tracks, dim_embedding)))
@@ -180,7 +180,7 @@ assert np.sum(context_weight) == 1.0
 
 predict_loss = 0.0
 for i in range(0, num_context):
-    bias = biases[i] #tf.stack([biases[i]] * batch_size)
+    bias = biases[i]
     logits = tf.matmul(embed, tf.transpose(weights[i])) + bias
     assert logits.shape == (batch_size, num_tracks)
     predict_loss = predict_loss + tf.nn.sparse_softmax_cross_entropy_with_logits(
@@ -191,7 +191,7 @@ for i in range(0, num_context):
 # Add a bit of L2 regularization.
 regularize_loss = (
     0.1 * tf.reduce_mean(tf.square(embeddings)) +
-    0.2 * tf.reduce_mean(tf.square(biases)) +
+    0.3 * tf.reduce_mean(tf.square(biases)) +
     0.1 * tf.reduce_mean(tf.square(weights))
 )
 loss = tf.reduce_mean(predict_loss) + regularize_loss
@@ -338,13 +338,13 @@ with tf.Session() as session:
                 # Decay the learning rate during training,
                 # mostly for a faster start.
                 if mean_loss < 0.5:
-                    rate = min(rate, 0.001)
+                    rate = min(rate, 0.0005)
                 if mean_loss < 3.0:
-                    rate = min(rate, 0.002)
+                    rate = min(rate, 0.001)
                 if mean_loss < 6.0:
-                    rate = min(rate, 0.003)
-                elif mean_loss < 10.0:
                     rate = min(rate, 0.005)
+                elif mean_loss < 10.0:
+                    rate = min(rate, 0.009)
 
                 print(f'Epoch {epoch} batch {b:4}: loss = {mean_loss:0.5f}')
 
