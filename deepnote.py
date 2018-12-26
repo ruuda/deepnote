@@ -91,7 +91,7 @@ print(f'Listened to {len(listencounts)} distinct tracks.')
 
 # Remove tracks with few listens. We need at least *some* data
 # to get a decent embedding.
-min_listens = 5
+min_listens = 3
 listens = [
     listen
     for listen in listens
@@ -156,14 +156,18 @@ print(f'Found {len(windows)} suitable training samples of {num_context + 1} list
 # do not get a dimension per artist either -- the model will need to eliminte
 # redundancies to fit. Let's try 265.
 #dim_embedding = 265
-dim_embedding = 50
+dim_embedding = 16
 
 batch_size = 75
 num_tracks = len(id_to_track)
 
-embeddings = tf.Variable(tf.truncated_normal((num_tracks, dim_embedding)))
-weights = tf.Variable(tf.truncated_normal((num_context, num_tracks, dim_embedding)))
-biases = tf.Variable(tf.zeros((num_context, num_tracks)))
+embeddings = tf.Variable(0.1 * tf.truncated_normal((num_tracks, dim_embedding)))
+weights = tf.Variable(0.1 * tf.truncated_normal((num_context, num_tracks, dim_embedding)))
+
+# Pre-set biases to track frequencies to get a warmer start.
+frequencies = np.array([listencounts[i] for i in id_to_track], dtype=np.float32)
+initial_biases = np.log(frequencies / np.sum(frequencies))
+biases = tf.Variable(tf.stack([initial_biases] * num_context), dtype=tf.float32)
 
 # Define input placeholders.
 train_inputs = tf.placeholder(tf.int32, shape=(batch_size,))
@@ -174,7 +178,7 @@ embed = tf.nn.embedding_lookup(embeddings, train_inputs)
 
 # The loss is a weighted loss over all context tracks, where tracks closer to
 # the focus track weigh more.
-context_weight = np.array([0.1, 0.1, 0.3, 0.3, 0.1, 0.1])
+context_weight = np.array([0.15, 0.15, 0.2, 0.2, 0.15, 0.15])
 assert context_weight.shape == (num_context,)
 assert np.sum(context_weight) == 1.0
 
@@ -190,9 +194,9 @@ for i in range(0, num_context):
 
 # Add a bit of L2 regularization.
 regularize_loss = (
-    0.1 * tf.reduce_mean(tf.square(embeddings)) +
-    0.3 * tf.reduce_mean(tf.square(biases)) +
-    0.1 * tf.reduce_mean(tf.square(weights))
+    0.01 * tf.reduce_mean(tf.square(embeddings)) +
+    0.01 * tf.reduce_mean(tf.square(biases)) +
+    0.01 * tf.reduce_mean(tf.square(weights))
 )
 loss = tf.reduce_mean(predict_loss) + regularize_loss
 
@@ -225,9 +229,14 @@ def iterate_windows_batch():
                     context.append(msid)
                 times.append(listens[w + k].timestamp)
 
+            assert len(times) == num_context + 1
             assert max(times) - min(times) < 3600, f'Invalid window {times}'
 
             contexts.append(context)
+
+        assert len(centers) == batch_size
+        assert len(contexts) == batch_size
+        assert all(len(ctx) == num_context for ctx in contexts)
 
         yield (centers, contexts)
 
@@ -280,7 +289,11 @@ def update_projection(emb: np.array):
     # Project embeddings on the space spanned by the first two principal
     # components.
     projection = u[:2].T
-    print('Projection quality:', magnitudes[:10] / np.sum(magnitudes))
+    print(
+        'Projection quality:',
+        magnitudes[:3] / np.sum(magnitudes),
+        magnitudes[-3:] / np.sum(magnitudes)
+    )
 
 
 def plot_embedding(emb: np.array):
